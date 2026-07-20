@@ -13,6 +13,7 @@ retained for validation and forest plots on top hits.
 - **Real data demo**: GEMAS asthma EWAS (2 cohorts, EPIC 850K, 751k CpGs) with validation against the authors' published results
 - **Simulated 14-cohort demo** with injected true hits for the performance benchmark
 - **Plots**: volcano, Manhattan, forest plots, QQ plot (genomic inflation λ), funnel plot, L'Abé plot, DMR plot
+- **Heterogeneity diagnostics**: I² and tau² distributions, Cochran's Q vs pooled significance, fixed- vs random-effects divergence, and a per-hit heterogeneity table
 - **EWAS Catalog cross-referencing**: queries the MRC-IEU EWAS Catalog API to check whether top hits are novel or previously reported
 - **DMR aggregation**: lightweight Stouffer p-value combination to identify differentially methylated regions
 
@@ -26,7 +27,7 @@ cd ewas-meta-analysis
 Open `ewas_metaanalysis_tutorial.Rmd` in RStudio and click **Knit**, or run:
 
 ```r
-install.packages(c("meta", "data.table", "ggplot2", "httr", "jsonlite", "rmarkdown"))
+install.packages(c("meta", "data.table", "ggplot2", "patchwork", "httr", "jsonlite", "rmarkdown"))
 rmarkdown::render("ewas_metaanalysis_tutorial.Rmd")
 ```
 
@@ -40,11 +41,12 @@ data and downloads the GEMAS EWAS from Zenodo automatically.
 | **meta** (≥ 7.0) | `metagen()` for validation and forest plots |
 | **data.table** | Fast file I/O and data manipulation |
 | **ggplot2** | All plots |
+| **patchwork** | Side-by-side heterogeneity diagnostic plots |
 | **httr** + **jsonlite** | EWAS Catalog API queries |
 | **rmarkdown** | Rendering the tutorial |
 
 ```r
-install.packages(c("meta", "data.table", "ggplot2", "httr", "jsonlite", "rmarkdown"))
+install.packages(c("meta", "data.table", "ggplot2", "patchwork", "httr", "jsonlite", "rmarkdown"))
 ```
 
 ## Using your own data

@@ -22,6 +22,7 @@ jobs:
             meta
             data.table
             ggplot2
+            patchwork
             httr
             jsonlite
             rmarkdown
