@@ -37,7 +37,7 @@ things it is genuinely needed for:
 
 ```{r packages}
 ## Install if missing (run once)
-for (pkg in c("meta", "data.table", "ggplot2")) {
+for (pkg in c("meta", "data.table", "ggplot2", "patchwork")) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
     install.packages(pkg, repos = "https://cloud.r-project.org")
   }
@@ -1069,7 +1069,143 @@ ggplot(labbe_plot_dt, aes(beta_canary, beta_basque, color = sig)) +
 
 ---
 
-## 16. EWAS Catalog cross-referencing
+## 16. Heterogeneity diagnostics
+
+Between-cohort heterogeneity is a first-class concern in EWAS
+meta-analysis: even when the pooled p-value is significant, substantial
+heterogeneity (high I², low Q p-value) means the cohorts disagree on the
+effect direction or magnitude, which weakens the biological
+interpretation. The vectorized pipeline already computes Cochran's Q,
+I², H, and tau² per CpG — this section visualizes their distributions
+and flags CpGs where the fixed- and random-effects estimates diverge.
+
+### 16a. I² and tau² distributions
+
+```{r het-distributions, fig.width=12, fig.height=5}
+het_dt <- copy(gemas_results[!is.na(I2) & is.finite(I2)])
+
+## I² is stored as a proportion (0-1); convert to % for display
+het_dt[, I2_pct := I2 * 100]
+het_dt[, tau2 := pmax(0, tau2)]   # guard against tiny negatives
+
+p_i2 <- ggplot(het_dt, aes(I2_pct)) +
+  geom_histogram(bins = 60, fill = "#0279EE", color = "white", linewidth = 0.2) +
+  geom_vline(xintercept = 25, linetype = "dashed", color = "#FF9400", linewidth = 0.5) +
+  geom_vline(xintercept = 50, linetype = "dashed", color = "#FF0000", linewidth = 0.5) +
+  scale_x_continuous(limits = c(0, 100)) +
+  labs(x = expression(I^2 ~ "(% of variance due to heterogeneity)"),
+       y = "Number of CpGs",
+       title = "I² distribution across CpGs",
+       subtitle = "Dashed lines: 25% (low) and 50% (moderate) heterogeneity") +
+  theme_meta()
+
+p_tau2 <- ggplot(het_dt[tau2 > 0], aes(tau2)) +
+  geom_histogram(bins = 60, fill = "#75A025", color = "white", linewidth = 0.2) +
+  scale_x_log10() +
+  labs(x = expression(tau^2 ~ "(between-cohort variance, log scale)"),
+       y = "Number of CpGs",
+       title = expression(tau^2 ~ "distribution (CpGs with" ~ tau^2 > 0 ~ "only)"),
+       subtitle = sprintf("%d CpGs with tau2 > 0 (%.1f%% of all CpGs)",
+                          sum(het_dt$tau2 > 0),
+                          100 * sum(het_dt$tau2 > 0) / nrow(het_dt))) +
+  theme_meta()
+
+library(patchwork)
+p_i2 + p_tau2 + plot_layout(ncol = 2)
+```
+
+### 16b. Q-statistic p-value vs pooled p-value
+
+A CpG can have a significant pooled p-value **and** significant
+heterogeneity — these are the cases where the random-effects model
+matters most. This plot flags them.
+
+```{r het-q-vs-p, fig.width=9, fig.height=7}
+qplot_dt <- copy(gemas_results[!is.na(p_FE) & !is.na(Q) & !is.na(df)])
+qplot_dt[, pQ := pchisq(Q, df, lower.tail = FALSE)]
+qplot_dt[, neglog10_p := -log10(p_FE)]
+qplot_dt[, neglog10_pQ := -log10(pmax(pQ, 1e-300))]  # clamp for plotting
+qplot_dt[, het_sig := pQ < 0.05]
+qplot_dt[, category := fifelse(
+  p_FE < 1e-5 & het_sig, "Significant + heterogeneous",
+  fifelse(p_FE < 1e-5 & !het_sig, "Significant + homogeneous",
+  fifelse(p_FE >= 1e-5 & het_sig, "NS + heterogeneous", "NS + homogeneous")))]
+qplot_dt[, category := factor(category, levels = c(
+  "Significant + heterogeneous", "Significant + homogeneous",
+  "NS + heterogeneous", "NS + homogeneous"))]
+
+ggplot(qplot_dt, aes(neglog10_p, neglog10_pQ, color = category)) +
+  geom_point(alpha = 0.4, size = 0.8) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+             color = "grey50", linewidth = 0.4) +
+  geom_vline(xintercept = -log10(1e-5), linetype = "dashed",
+             color = "grey50", linewidth = 0.4) +
+  scale_color_manual(values = c(
+    "Significant + heterogeneous" = "#FF0000",
+    "Significant + homogeneous"   = "#FF9400",
+    "NS + heterogeneous"          = "#0279EE",
+    "NS + homogeneous"            = "grey85"
+  )) +
+  labs(x = expression(-log[10](italic(p)) ~ "pooled (fixed-effect)"),
+       y = expression(-log[10](italic(p)) ~ "Cochran's Q (heterogeneity)"),
+       color = "Category",
+       title = "Significance vs heterogeneity",
+       subtitle = "Top-left quadrant: significant + homogeneous (strongest hits)") +
+  theme_meta() +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+```
+
+### 16c. Fixed- vs random-effects divergence
+
+When heterogeneity is low (tau² ≈ 0), the FE and RE estimates coincide.
+When heterogeneity is high, they diverge. Plotting them against each
+other reveals CpGs where the model choice changes the conclusion.
+
+```{r het-fe-vs-re, fig.width=8, fig.height=7}
+fe_re_dt <- copy(gemas_results[!is.na(beta_FE) & !is.na(beta_RE)])
+fe_re_dt[, sig := fifelse(p_FE < 1e-5, "p < 1e-5", "NS")]
+fe_re_dt[, sig := factor(sig, levels = c("p < 1e-5", "NS"))]
+
+ggplot(fe_re_dt, aes(beta_FE, beta_RE, color = sig)) +
+  geom_point(alpha = 0.4, size = 0.8) +
+  geom_abline(slope = 1, intercept = 0, color = "grey40",
+              linetype = "dashed", linewidth = 0.4) +
+  scale_color_manual(values = c("p < 1e-5" = "#FF9400", "NS" = "grey80")) +
+  labs(x = "Fixed-effect estimate (beta_FE)",
+       y = "Random-effects estimate (beta_RE)",
+       color = "Significance",
+       title = "Fixed- vs random-effects estimates",
+       subtitle = "Off-diagonal points = high heterogeneity (model choice matters)") +
+  theme_meta() +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+```
+
+### 16d. Top hits heterogeneity table
+
+For the top hits, report the heterogeneity statistics explicitly so you
+can judge which are robust across cohorts.
+
+```{r het-top-table}
+top_het <- head(gemas_results[order(p_FE)], 20)
+top_het[, I2_pct := I2 * 100]
+top_het[, pQ := pchisq(Q, df, lower.tail = FALSE)]
+
+top_het[, .(CpG, gene, beta_FE, p_FE, beta_RE, p_RE, tau2,
+            I2_pct, Q, pQ, k)]
+```
+
+> **Interpreting heterogeneity in EWAS.** I² > 50% with a significant Q
+> p-value indicates that more than half the variance is between-cohort
+> rather than sampling noise. In a 2-cohort meta-analysis (like GEMAS),
+> I² is binary in spirit — either the cohorts agree (I² ≈ 0) or they
+> don't (I² ≈ 100%) — so heterogeneity diagnostics are most informative
+> with ≥3 cohorts. For your 14-cohort meta-analysis, these plots will
+> show a continuous I² distribution and let you flag CpGs where the
+> effect is driven by a minority of cohorts.
+
+---
+
+## 17. EWAS Catalog cross-referencing
 
 The [MRC-IEU EWAS Catalog](https://www.ewascatalog.org/) is a curated database
 of CpG–trait associations from published EWAS. After identifying top hits in
@@ -1164,7 +1300,7 @@ if (nrow(catalog_hits) > 0) {
 
 ---
 
-## 17. DMR aggregation (lightweight Stouffer combination)
+## 18. DMR aggregation (lightweight Stouffer combination)
 
 Single-CpG EWAS hits are often interpreted at the **region** level — clusters
 of nearby CpGs that are co-methylated and co-associated. This is called
@@ -1315,7 +1451,7 @@ if (nrow(gemas_dmr) > 0) {
 
 ---
 
-## 18. Summary of what you get
+## 19. Summary of what you get
 
 | Output | Where |
 |--------|-------|
@@ -1330,8 +1466,9 @@ if (nrow(gemas_dmr) > 0) {
 | QQ plot + genomic inflation (lambda) | Section 14 |
 | Funnel plot | Section 15a |
 | L'Abé plot (cohort concordance) | Section 15b |
-| EWAS Catalog cross-referencing | Section 16 |
-| DMR aggregation + plot | Section 17 |
+| Heterogeneity diagnostics (I², tau², Q, FE vs RE) | Section 16 |
+| EWAS Catalog cross-referencing | Section 17 |
+| DMR aggregation + plot | Section 18 |
 
 **Performance:** the vectorized scan over 900k CpGs × 14 cohorts runs in
 seconds and uses ~1 GB RAM. The per-CpG `metagen` loop that would take hours
